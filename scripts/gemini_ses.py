@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 
 # Denenecek modeller (ilk çalışan kullanılır)
-MODELLER = ["gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"]
+MODELLER = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"]
 API = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 
@@ -69,40 +69,47 @@ def metni_hazirla(ham: str) -> str:
 
 
 def seslendir(anahtar, metin: str, ses: str, uslup: str, hedef: Path):
+    """Önce sesi Gemini'den alır (sadece API hatalarında yeniden dener), sonra MP3'e çevirir."""
+    veri = kullanilan = None
     son_hata = None
     for model in MODELLER:
         for deneme in range(2):
             try:
-                veri, tur = istek(anahtar, model, metin, ses, uslup)
-                wav = hedef.with_suffix(".wav")
-                if veri[:4] == b"RIFF":
-                    wav.write_bytes(veri)
-                else:  # başlıksız PCM gelirse WAV başlığı ekle
-                    with wave.open(str(wav), "wb") as w:
-                        w.setnchannels(1)
-                        w.setsampwidth(2)
-                        w.setframerate(24000)
-                        w.writeframes(veri)
-                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav),
-                                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "44100",
-                                "-c:a", "libmp3lame", "-b:a", "160k", str(hedef)], check=True)
-                wav.unlink()
-                print(f"✔ {ses} ({model}) → {hedef.name}", flush=True)
-                return model
+                veri, _ = istek(anahtar, model, metin, ses, uslup)
+                kullanilan = model
+                break
             except Exception as e:  # noqa: BLE001
                 son_hata = e
                 mesaj = str(e)
                 print(f"  ⚠ {ses} / {model}: {mesaj[:300]}", flush=True)
-                if "RESOURCE_EXHAUSTED" in mesaj or "429" in mesaj:
+                if "RESOURCE_EXHAUSTED" in mesaj or mesaj.startswith("429"):
                     if "PerDay" in mesaj or "per day" in mesaj.lower():
                         raise RuntimeError("Gemini günlük ücretsiz sınırı doldu, yarın tekrar dene.") from e
                     time.sleep(35)
                     continue
-                if ("NOT_FOUND" in mesaj or mesaj.startswith("404") or "not supported" in mesaj.lower()
-                        or "INVALID_ARGUMENT" in mesaj and "API key" not in mesaj):
-                    break   # bu model yok, sonrakini dene
+                if mesaj.startswith(("400", "404")):
+                    break   # bu model bu isteği desteklemiyor, sonrakini dene
                 time.sleep(5)
-    raise RuntimeError(f"Seslendirilemedi: {son_hata}")
+        if veri:
+            break
+    if not veri:
+        raise RuntimeError(f"Seslendirilemedi: {son_hata}")
+
+    wav = hedef.with_suffix(".wav")
+    if veri[:4] == b"RIFF":
+        wav.write_bytes(veri)
+    else:  # başlıksız PCM gelirse WAV başlığı ekle
+        with wave.open(str(wav), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(24000)
+            w.writeframes(veri)
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav),
+                    "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "44100",
+                    "-c:a", "libmp3lame", "-b:a", "160k", str(hedef)], check=True)
+    wav.unlink()
+    print(f"✔ {ses} ({kullanilan}) → {hedef.name}", flush=True)
+    return kullanilan
 
 
 def main():
