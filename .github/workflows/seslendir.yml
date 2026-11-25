@@ -16,10 +16,10 @@ on:
         required: false
         default: ""
       ses:
-        description: "Kutuya yazılan metin için ses (dogal = hikâye anlatıcısı, ahmet/emel = hızlı Microsoft sesleri)"
+        description: "Kutuya yazılan metin için ses (enceladus = Gemini hikâye anlatıcısı, dogal = Chatterbox, ahmet/emel = hızlı Microsoft sesleri)"
         type: choice
-        options: [dogal, ahmet, emel]
-        default: dogal
+        options: [enceladus, dogal, ahmet, emel]
+        default: enceladus
 
 permissions:
   contents: write
@@ -49,7 +49,7 @@ jobs:
           path: |
             ~/.cache/huggingface
             ~/.pkuseg
-          key: ses-modeli-chatterbox-v1
+          key: ses-modelleri-v2
 
       - name: Araçları kur
         run: |
@@ -87,6 +87,8 @@ jobs:
 
       - name: Seslendir
         if: steps.bul.outputs.adet != '0'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           xargs -0 -a liste.txt python scripts/seslendir.py --cikti cikti --ozet ozet.json
 

@@ -4,14 +4,17 @@ Risale Seslendirme
 ------------------
 metinler/ klasöründeki .txt dosyalarını MP3 seslendirmeye ve SRT altyazıya çevirir.
 
-İki seslendirme motoru vardır:
-    dogal  (varsayılan) Chatterbox — hikâye anlatır gibi, doğal ses; daha yavaş üretir
+Üç seslendirme motoru vardır:
+    gemini (varsayılan) Gemini TTS — hikâye anlatıcısı, en doğal ses (GEMINI_API_KEY gerekir)
+    dogal  Chatterbox — bilgisayarda çalışır, anahtar gerekmez; daha yavaş üretir
     hizli  Microsoft Edge sesleri (Ahmet / Emel) — çok hızlı üretir, daha yapay
 
 Metin dosyasının en üstüne isteğe bağlı ayarlar yazılabilir:
-    motor: dogal      (dogal | hizli)
-    ses: varsayilan   (dogal motorda: varsayilan ya da sesler/ klasöründeki bir kaydın adı;
+    motor: gemini     (gemini | dogal | hizli)
+    ses: Enceladus    (gemini motorda: Enceladus, Charon, Algieba, Sadaltager, Iapetus ...;
+                       dogal motorda: varsayilan ya da sesler/ klasöründeki bir kaydın adı;
                        hizli motorda: ahmet | emel)
+    uslup: ...        (sadece gemini motorda; nasıl okunacağının tarifi)
     hiz: -5           (yüzde; eksi = yavaş, artı = hızlı)
     ton: 0            (Hz; sadece hizli motorda; eksi = kalın, artı = ince)
     duygu: 65         (sadece dogal motorda; 0-100, yükseldikçe daha duygulu)
@@ -100,11 +103,13 @@ def zaman(sn: float) -> str:
 
 @dataclass
 class Ayar:
-    motor: str = "dogal"
-    ses: str = "varsayilan"
+    motor: str = "gemini"
+    ses: str = ""
     hiz: int = -5
     ton: int = 0
     duygu: int = 65
+    uslup: str = ""
+    hiz_yazildi: bool = False
 
 
 # Doğal motorda noktalama işaretlerinden sonra bırakılacak sessizlik (saniye)
@@ -143,10 +148,13 @@ def ayarlari_ayir(ham: str):
             anahtar = ascii_ad(anahtar).lower()
             deger_k = ascii_ad(deger).lower()
             if anahtar == "motor":
-                ayar.motor = "hizli" if deger_k.startswith("hiz") else "dogal"
+                ayar.motor = ("hizli" if deger_k.startswith("hiz") else
+                              "dogal" if deger_k.startswith("dog") else "gemini")
                 motor_yazildi = True
             elif anahtar == "ses" and deger:
                 ayar.ses = deger_k
+            elif anahtar == "uslup" and deger:
+                ayar.uslup = deger
             elif anahtar == "hiz":
                 ayar.hiz = sayi(deger, ayar.hiz)
                 hiz_yazildi = True
@@ -158,11 +166,18 @@ def ayarlari_ayir(ham: str):
     # "ses: ahmet / emel" yazıldıysa ve motor belirtilmediyse hızlı motor kastedilmiştir
     if not motor_yazildi and ayar.ses in SESLER:
         ayar.motor = "hizli"
+    ayar.hiz_yazildi = hiz_yazildi
     if ayar.motor == "hizli":
         if ayar.ses not in SESLER:
             ayar.ses = "ahmet"
         if not hiz_yazildi:
             ayar.hiz = 0
+    elif ayar.motor == "gemini":
+        ayar.ses = (ayar.ses or "enceladus").capitalize()
+        if not hiz_yazildi:
+            ayar.hiz = 0
+    else:
+        ayar.ses = ayar.ses or "varsayilan"
     return ayar, ham
 
 
@@ -447,6 +462,120 @@ def zamanla(satirlar, kelime_zamanlari, toplam_sure):
 DOGAL = DogalMotor()
 
 
+# ---------------------------------------------------------------- Gemini motoru + hizalama
+
+def _norm(k: str) -> str:
+    k = k.replace("I", "ı").replace("İ", "i").lower()
+    k = unicodedata.normalize("NFKD", k)
+    k = "".join(ch for ch in k if not unicodedata.combining(ch))
+    return re.sub(r"[^\w]", "", k)
+
+
+_WHISPER = None
+
+
+def kelime_zamanlari_bul(ses_dosyasi: Path, kelimeler):
+    """Whisper ile sesteki kelimelerin zamanını bulur ve metnin asıl kelimelerine eşler."""
+    global _WHISPER
+    import difflib
+    import numpy as np
+    from faster_whisper import WhisperModel
+    if _WHISPER is None:
+        print("  Altyazı zamanlaması için Whisper yükleniyor...", flush=True)
+        _WHISPER = WhisperModel("small", device="cpu", compute_type="int8")
+    ham = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(ses_dosyasi), "-ar", "16000",
+                          "-ac", "1", "-f", "f32le", "-"], capture_output=True, check=True).stdout
+    segmentler, _ = _WHISPER.transcribe(np.frombuffer(ham, dtype=np.float32), language="tr",
+                                        word_timestamps=True, beam_size=5)
+    duyulan = [(_norm(w.word), w.start, w.end) for seg in segmentler for w in (seg.words or [])]
+    duyulan = [d for d in duyulan if d[0]]
+    toplam = sure_ol(ses_dosyasi)
+
+    asil = [_norm(k) for k in kelimeler]
+    zamanlar = [None] * len(kelimeler)
+    esle = difflib.SequenceMatcher(None, asil, [d[0] for d in duyulan], autojunk=False)
+    for blok in esle.get_matching_blocks():
+        for j in range(blok.size):
+            _, b, s = duyulan[blok.b + j]
+            zamanlar[blok.a + j] = (b, s)
+    # yakın ama birebir olmayan kelimeler: eşleşmeyen aralıklarda sırayla dağıt
+    for etiket, a1, a2, b1, b2 in esle.get_opcodes():
+        if etiket == "replace" and a2 - a1 == b2 - b1:
+            for j in range(a2 - a1):
+                zamanlar[a1 + j] = duyulan[b1 + j][1:]
+    # hâlâ zamanı olmayanları komşularına göre harf oranıyla doldur
+    i = 0
+    while i < len(zamanlar):
+        if zamanlar[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(zamanlar) and zamanlar[j] is None:
+            j += 1
+        bas = zamanlar[i - 1][1] if i > 0 else 0.0
+        son = zamanlar[j][0] if j < len(zamanlar) else toplam
+        uz = [len(kelimeler[k]) + 1 for k in range(i, j)]
+        top = sum(uz)
+        t = bas
+        for k, u in zip(range(i, j), uz):
+            d = (son - bas) * u / top
+            zamanlar[k] = (t, t + d)
+            t += d
+        i = j
+    bulunan = sum(b.size for b in esle.get_matching_blocks())
+    print(f"  Altyazı eşleşmesi: {bulunan}/{len(kelimeler)} kelime sesle birebir eşleşti", flush=True)
+    return zamanlar
+
+
+def gemini_isle(govde: str, ayar: Ayar, kurallar, mp3: Path):
+    """Metni Gemini ile tek seferde seslendirir; altyazı satırlarını (bas, son, metin) döner."""
+    import gemini_ses
+    anahtar = os.environ.get("GEMINI_API_KEY")
+    if not anahtar:
+        raise RuntimeError("GEMINI_API_KEY yok")
+    parcalar = paragraflara_bol(govde)
+    okunan, bolumler = [], []
+    for p in parcalar:
+        if p.tur == "dur":
+            if p.altyazi is False and p.saniye >= 0.95:
+                okunan.append("...")
+            continue
+        okunan.append(telaffuz_uygula(p.metin, kurallar) if p.tur == "tr" else p.metin)
+        bolumler.append(p)
+    okunacak = "\n\n".join(okunan)
+    uslup = ayar.uslup or gemini_ses.VARSAYILAN_USLUP
+    gemini_ses.seslendir(anahtar, okunacak, ayar.ses, uslup, mp3)
+
+    if ayar.hiz_yazildi and ayar.hiz:
+        tempo = max(0.7, min(1.3, 1 + ayar.hiz / 100))
+        gecici = mp3.with_name(mp3.stem + "-tempo.mp3")
+        calistir(["ffmpeg", "-y", "-loglevel", "error", "-i", str(mp3), "-af", f"atempo={tempo:.3f}",
+                  "-c:a", "libmp3lame", "-b:a", "160k", str(gecici)])
+        gecici.replace(mp3)
+
+    kelimeler, sahip = [], []
+    for bi, p in enumerate(bolumler):
+        for k in p.metin.split():
+            kelimeler.append(k)
+            sahip.append(bi)
+    zamanlar = kelime_zamanlari_bul(mp3, kelimeler)
+
+    altyazi, konum = [], 0
+    for bi, p in enumerate(bolumler):
+        adet = len(p.metin.split())
+        z = zamanlar[konum:konum + adet]
+        if p.tur == "ar":
+            altyazi.append((z[0][0], z[-1][1], p.metin))
+        else:
+            k = 0
+            for satir in altyazi_gruplari(p.metin):
+                n = len(satir.split())
+                altyazi.append((z[k][0], z[k + n - 1][1] + 0.15, satir))
+                k += n
+        konum += adet
+    return altyazi
+
+
 async def dosya_isle(kaynak: Path, cikti_klasoru: Path):
     ham = kaynak.read_text(encoding="utf-8-sig")
     ayar, govde = ayarlari_ayir(ham)
@@ -461,8 +590,18 @@ async def dosya_isle(kaynak: Path, cikti_klasoru: Path):
     srt = cikti_klasoru / f"{ad}.srt"
     txt_altyazi = []
 
+    if ayar.motor == "gemini":
+        try:
+            txt_altyazi = gemini_isle(govde, ayar, kurallar, mp3)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ⚠ Gemini ile seslendirilemedi ({e}). Doğal motorla (Chatterbox) devam ediliyor.", flush=True)
+            ayar.motor, ayar.ses, ayar.hiz = "dogal", "varsayilan", -5
+            txt_altyazi = []
+
     with tempfile.TemporaryDirectory() as gecici:
         gecici = Path(gecici)
+        if ayar.motor == "gemini":
+            parcalar = []   # ses zaten üretildi
         dosyalar = []
         zaman_cizelgesi = 0.0
         for i, p in enumerate(parcalar):
@@ -503,11 +642,12 @@ async def dosya_isle(kaynak: Path, cikti_klasoru: Path):
 
         liste = gecici / "liste.txt"
         liste.write_text("".join(f"file '{d}'\n" for d in dosyalar), encoding="utf-8")
-        calistir([
+        if dosyalar:
+          calistir([
             "ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
             "-i", str(liste), "-ar", "44100", "-ac", "1",
             "-c:a", "libmp3lame", "-b:a", "128k", str(mp3),
-        ])
+          ])
 
     # Altyazı çakışmalarını düzelt
     satirlar = []
@@ -521,7 +661,8 @@ async def dosya_isle(kaynak: Path, cikti_klasoru: Path):
     print(f"✔ {kaynak.name} → {mp3.name} ({sure:.1f} sn), {srt.name}")
     return {"kaynak": kaynak.name, "mp3": mp3.name, "srt": srt.name,
             "sure": round(sure, 1),
-            "ses": (f"doğal ({ayar.ses})" if ayar.motor == "dogal" else f"hızlı ({ayar.ses})")}
+            "ses": {"gemini": f"Gemini ({ayar.ses})", "dogal": f"doğal ({ayar.ses})"}.get(
+                ayar.motor, f"hızlı ({ayar.ses})")}
 
 
 async def ana():

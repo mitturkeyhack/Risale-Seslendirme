@@ -69,7 +69,7 @@ jobs:
           path: |
             ~/.cache/huggingface
             ~/.pkuseg
-          key: ses-modeli-chatterbox-v1
+          key: ses-modelleri-v2
 
       - name: Seslendirme araçlarını kur
         if: steps.bul.outputs.adet != '0'
@@ -92,6 +92,8 @@ jobs:
 
       - name: Videoları üret
         if: steps.bul.outputs.adet != '0'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           hata=0
           while IFS= read -r k; do

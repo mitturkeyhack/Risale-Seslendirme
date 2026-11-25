@@ -1,2 +1,4 @@
 edge-tts
 chatterbox-tts==0.1.7
+faster-whisper==1.1.0
+av<19

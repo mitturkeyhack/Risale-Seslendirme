@@ -38,14 +38,15 @@ Dosyayı düzenleyip kaydetmen yeterli, yeni ses otomatik üretilir.
 
 ---
 
-## 🎙️ İki ses motoru var
+## 🎙️ Ses motorları
 
 | Motor | Nasıl | Süre |
 |---|---|---|
-| **doğal** (varsayılan) | Hikâye anlatır gibi, sıcak ve akıcı. Cümle sonlarında doğal duraklamalar yapar | 1 dakikalık ses yaklaşık 5-10 dakikada hazır olur |
-| **hızlı** | Microsoft sesleri (Ahmet / Emel), daha yapay | Birkaç saniyede hazır |
+| **gemini** (varsayılan) | Gemini'nin **Enceladus** sesi; sıcak, sakin, hikâye anlatır gibi. Ücretsiz planda günde yaklaşık 10 seslendirme | Birkaç dakika |
+| **dogal** | Chatterbox, anahtar gerektirmez. Gemini sınırı dolarsa otomatik olarak bu kullanılır | 1 dakikalık ses için 5-10 dakika |
+| **hizli** | Microsoft sesleri (Ahmet / Emel), daha yapay | Birkaç saniye |
 
-Hiçbir ayar yazmazsan **doğal** motorla, orta hızda okunur.
+Hiçbir ayar yazmazsan **Gemini – Enceladus** sesiyle okunur.
 
 ## ⚙️ Ayarlar (isteğe bağlı)
 
@@ -62,8 +63,9 @@ Metin buradan başlar...
 |---|---|---|
 | `hiz` | Okuma hızı, yüzde olarak. Eksi yavaşlatır, artı hızlandırır (varsayılan -5) | `hiz: -10` |
 | `duygu` | Sadece doğal motorda. 0-100 arası, yükseldikçe daha duygulu okur (varsayılan 65) | `duygu: 75` |
-| `ses` | Doğal motorda `sesler/` klasörüne koyduğun kaydın adı (bkz. [sesler/BENI-OKU.md](sesler/BENI-OKU.md)). `ahmet` ya da `emel` yazarsan hızlı motorla okunur | `ses: anlatici` |
-| `motor` | `dogal` ya da `hizli` | `motor: hizli` |
+| `ses` | Gemini sesi (`Enceladus`, `Charon`, `Algieba`, `Sadaltager`, `Iapetus` ...). Doğal motorda `sesler/` klasöründeki kaydın adı. `ahmet` ya da `emel` yazarsan hızlı motorla okunur | `ses: Charon` |
+| `uslup` | Sadece Gemini'de: nasıl okunacağının tarifi | `uslup: Çok yavaş, fısıltıya yakın, hüzünlü oku` |
+| `motor` | `gemini`, `dogal` ya da `hizli` | `motor: dogal` |
 | `ton` | Sadece hızlı motorda. Eksi kalınlaştırır, artı inceltir | `ton: -5` |
 
 ---
