@@ -1,0 +1,128 @@
+name: Video
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "videolar/**"
+  workflow_dispatch:
+    inputs:
+      klasor:
+        description: "videolar klasöründeki video klasörünün adı (örn: birinci-soz). Boş bırakırsan hepsi yapılır."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: video
+  cancel-in-progress: false
+
+env:
+  MPT_SURUM: 2dc10e8   # MoneyPrinterTurbo'nun denenmiş sürümü
+
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Yapılacak videoları bul
+        id: bul
+        env:
+          OLAY: ${{ github.event_name }}
+          ONCE: ${{ github.event.before }}
+          GIRDI: ${{ github.event.inputs.klasor }}
+        run: |
+          : > klasorler.txt
+          if [ "$OLAY" = "workflow_dispatch" ] && [ -n "$GIRDI" ]; then
+            echo "videolar/${GIRDI#videolar/}" >> klasorler.txt
+          elif [ "$OLAY" = "workflow_dispatch" ] || [ -z "$ONCE" ] || [ "$ONCE" = "0000000000000000000000000000000000000000" ]; then
+            find videolar -mindepth 1 -maxdepth 1 -type d >> klasorler.txt
+          else
+            git -c core.quotepath=off diff --name-only --diff-filter=AMR "$ONCE" "$GITHUB_SHA" -- videolar \
+              | awk -F/ 'NF>=3 {print $1"/"$2}' | sort -u >> klasorler.txt
+          fi
+          # silinmiş ya da içinde metin olmayan klasörleri at
+          : > gecerli.txt
+          while IFS= read -r k; do
+            [ -d "$k" ] && ls "$k"/*.txt >/dev/null 2>&1 && echo "$k" >> gecerli.txt
+          done < klasorler.txt
+          echo "Yapılacak videolar:"; cat gecerli.txt
+          echo "adet=$(wc -l < gecerli.txt)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.bul.outputs.adet != '0'
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/gereksinimler.txt
+
+      - name: Modelleri önbellekten al
+        if: steps.bul.outputs.adet != '0'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.pkuseg
+          key: ses-modeli-chatterbox-v1
+
+      - name: Seslendirme araçlarını kur
+        if: steps.bul.outputs.adet != '0'
+        run: |
+          pip install --quiet torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install --quiet -r scripts/gereksinimler.txt
+          command -v ffmpeg >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+
+      - name: MoneyPrinterTurbo'yu kur
+        if: steps.bul.outputs.adet != '0'
+        run: |
+          git clone --quiet https://github.com/harry0703/MoneyPrinterTurbo.git /tmp/mpt
+          git -C /tmp/mpt checkout --quiet "$MPT_SURUM"
+          cp /tmp/mpt/config.example.toml /tmp/mpt/config.toml
+          python -m venv /tmp/mptenv
+          /tmp/mptenv/bin/pip install --quiet -r /tmp/mpt/requirements.txt
+          mkdir -p /tmp/fontlar
+          cp /tmp/mpt/resource/fonts/BeVietnamPro-Bold.ttf /tmp/fontlar/
+          curl -sfL -o /tmp/fontlar/Amiri-Regular.ttf https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf
+
+      - name: Videoları üret
+        if: steps.bul.outputs.adet != '0'
+        run: |
+          hata=0
+          while IFS= read -r k; do
+            echo "::group::$k"
+            python scripts/video_yap.py "$k" --cikti cikti || { echo "::error::$k yapılamadı"; hata=1; }
+            echo "::endgroup::"
+          done < gecerli.txt
+          ls cikti/*.mp4 >/dev/null 2>&1 || exit 1
+
+      - name: Release olarak yayınla
+        if: steps.bul.outputs.adet != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="video-${GITHUB_RUN_NUMBER}"
+          python - "$TAG" <<'PY'
+          import json, sys, os, glob
+          tag = sys.argv[1]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          taban = f"https://github.com/{repo}/releases/download/{tag}"
+          ozetler = [json.load(open(p, encoding="utf-8")) for p in sorted(glob.glob("cikti/*.json"))]
+          satir = ["## 🎬 İndirme linkleri", ""]
+          for o in ozetler:
+              dk, sn = divmod(int(o["sure"]), 60)
+              satir += [f"**{o['ad']}** ({dk} dk {sn} sn, {o['gorsel']} görsel)",
+                        f"- 🎬 [Videoyu indir (MP4)]({taban}/{o['mp4']})",
+                        f"- 🔊 [Sadece ses (MP3)]({taban}/{o['mp3']})",
+                        f"- 📝 [Altyazı (SRT)]({taban}/{o['srt']})", ""]
+          open("notlar.md", "w", encoding="utf-8").write("\n".join(satir))
+          baslik = "🎬 " + ", ".join(o["ad"] for o in ozetler)
+          open("baslik.txt", "w", encoding="utf-8").write(baslik[:100])
+          PY
+          gh release create "$TAG" cikti/*.mp4 cikti/*.mp3 cikti/*.srt --title "$(cat baslik.txt)" --notes-file notlar.md
+          cat notlar.md >> "$GITHUB_STEP_SUMMARY"

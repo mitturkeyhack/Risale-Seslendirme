@@ -1,4 +1,18 @@
-# 🔊 Risale Seslendirme
+# 🔊 Risale Seslendirme + 🎬 Reels Video
+
+## 🎬 Video yapmak (görsel + metin → hazır Reels)
+
+1. **`videolar`** klasöründe yeni bir klasör aç. Bunun için **Add file → Create new file** de ve ad olarak `birinci-soz/metin.txt` yaz.
+2. Metni yapıştırıp **Commit changes** de.
+3. O klasöre gir, **Add file → Upload files** ile Gemini görsellerini yükle. Ad sırasıyla gösterilirler, örneğin `1.jpg`, `2.jpg`, `3.jpg`.
+4. 10-15 dakika sonra **Releases** kısmında **Videoyu indir (MP4)** linki hazır olur.
+
+Videoda görseller yavaşça yakınlaşır, sahneler yumuşak geçişle değişir, ses doğal anlatıcı sesidir, altyazıda okunan kelime altın rengine döner.
+Görsel hareketlerini [MoneyPrinterTurbo](https://github.com/harry0703/MoneyPrinterTurbo) (MIT) yapar.
+
+> Görselleri Gemini'den **tam boyutta** indir; video daha net olur.
+
+---
 
 Metni yapıştırırsın, birkaç dakika içinde **MP3 seslendirme** ve **SRT altyazı** hazır olur.
 Her şey GitHub'da kendi kendine çalışır, bilgisayar gerekmez.
