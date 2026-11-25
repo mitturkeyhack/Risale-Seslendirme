@@ -1,13 +1,7 @@
-ses: ahmet
-hiz: -5
-ton: 0
----
 [ar]بِسْمِ اللّٰهِ الرَّحْمٰنِ الرَّحِيمِ[/ar]
 
 [baslik]Deneme Metni[/baslik]
 
-Bu, sistemin nasıl çalıştığını göstermek için yazılmış küçük bir örnek metindir. Kendi metnini yazdığında, ses dosyası ve altyazı kendiliğinden hazırlanır.
+Bir zamanlar iki kardeş, uzak bir memlekete doğru yola çıkmışlar. Biri her taşın, her çiçeğin bir sahibi olduğunu bilirmiş; öteki ise her şeyi başıboş sanırmış... Aynı yolda yürüyorlarmış ama aynı dünyayı görmüyorlarmış.
 
-[dur 1.5]
-
-Paragraflar arasına boş satır bırakırsan, okuyucu orada kısa bir nefes alır. Arapça kısımları işaretlersen, onlar Arapça sesle okunur.
+Kendi metnini yazdığında, ses dosyası ve altyazı kendiliğinden hazırlanır.

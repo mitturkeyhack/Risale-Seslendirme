@@ -4,10 +4,17 @@ Risale Seslendirme
 ------------------
 metinler/ klasöründeki .txt dosyalarını MP3 seslendirmeye ve SRT altyazıya çevirir.
 
+İki seslendirme motoru vardır:
+    dogal  (varsayılan) Chatterbox — hikâye anlatır gibi, doğal ses; daha yavaş üretir
+    hizli  Microsoft Edge sesleri (Ahmet / Emel) — çok hızlı üretir, daha yapay
+
 Metin dosyasının en üstüne isteğe bağlı ayarlar yazılabilir:
-    ses: ahmet        (ahmet | emel)
+    motor: dogal      (dogal | hizli)
+    ses: varsayilan   (dogal motorda: varsayilan ya da sesler/ klasöründeki bir kaydın adı;
+                       hizli motorda: ahmet | emel)
     hiz: -5           (yüzde; eksi = yavaş, artı = hızlı)
-    ton: 0            (Hz; eksi = kalın, artı = ince)
+    ton: 0            (Hz; sadece hizli motorda; eksi = kalın, artı = ince)
+    duygu: 65         (sadece dogal motorda; 0-100, yükseldikçe daha duygulu)
     ---
 Ayarlar ile metin arasına '---' satırı konur. Ayar yazılmazsa varsayılanlar kullanılır.
 
@@ -93,9 +100,21 @@ def zaman(sn: float) -> str:
 
 @dataclass
 class Ayar:
-    ses: str = "ahmet"
-    hiz: int = 0
+    motor: str = "dogal"
+    ses: str = "varsayilan"
+    hiz: int = -5
     ton: int = 0
+    duygu: int = 65
+
+
+# Doğal motorda noktalama işaretlerinden sonra bırakılacak sessizlik (saniye)
+DURAKLAMA = {
+    "…": 0.9, "...": 0.9,
+    ".": 0.55, "?": 0.65, "!": 0.65,
+    ":": 0.45, ";": 0.45,
+    ",": 0.2,
+}
+PARCA_UZUNLUK = 220   # doğal motorda bir seferde okunacak en uzun parça (karakter)
 
 
 @dataclass
@@ -106,23 +125,44 @@ class Parca:
     altyazi: bool = True
 
 
+def sayi(deger: str, varsayilan: int) -> int:
+    m = re.search(r"[-+]?\d+", deger)
+    return int(m.group()) if m else varsayilan
+
+
 def ayarlari_ayir(ham: str):
     ayar = Ayar()
+    motor_yazildi = hiz_yazildi = False
     satirlar = ham.splitlines()
-    if "---" in [s.strip() for s in satirlar[:8]]:
+    if "---" in [s.strip() for s in satirlar[:10]]:
         ayrac = [s.strip() for s in satirlar].index("---")
         for s in satirlar[:ayrac]:
             if ":" not in s:
                 continue
-            anahtar, deger = [x.strip().lower() for x in s.split(":", 1)]
+            anahtar, deger = [x.strip() for x in s.split(":", 1)]
             anahtar = ascii_ad(anahtar).lower()
-            if anahtar == "ses" and deger in SESLER:
-                ayar.ses = deger
-            elif anahtar in ("hiz", "hız"):
-                ayar.hiz = int(re.sub(r"[^0-9-]", "", deger) or 0)
+            deger_k = ascii_ad(deger).lower()
+            if anahtar == "motor":
+                ayar.motor = "hizli" if deger_k.startswith("hiz") else "dogal"
+                motor_yazildi = True
+            elif anahtar == "ses" and deger:
+                ayar.ses = deger_k
+            elif anahtar == "hiz":
+                ayar.hiz = sayi(deger, ayar.hiz)
+                hiz_yazildi = True
             elif anahtar == "ton":
-                ayar.ton = int(re.sub(r"[^0-9-]", "", deger) or 0)
+                ayar.ton = sayi(deger, 0)
+            elif anahtar == "duygu":
+                ayar.duygu = max(0, min(100, sayi(deger, ayar.duygu)))
         ham = "\n".join(satirlar[ayrac + 1:])
+    # "ses: ahmet / emel" yazıldıysa ve motor belirtilmediyse hızlı motor kastedilmiştir
+    if not motor_yazildi and ayar.ses in SESLER:
+        ayar.motor = "hizli"
+    if ayar.motor == "hizli":
+        if ayar.ses not in SESLER:
+            ayar.ses = "ahmet"
+        if not hiz_yazildi:
+            ayar.hiz = 0
     return ayar, ham
 
 
@@ -230,6 +270,121 @@ async def tts(metin: str, ses: str, ayar: Ayar, hedef: Path):
     raise RuntimeError(f"Seslendirme başarısız: {son_hata}")
 
 
+# ---------------------------------------------------------------- doğal motor (Chatterbox)
+
+class DogalMotor:
+    """Chatterbox Multilingual ile hikâye anlatır gibi seslendirme."""
+
+    def __init__(self):
+        self.model = None
+        self.referanslar = {}
+
+    def yukle(self):
+        if self.model is None:
+            import torch  # noqa: F401  (yavaş yüklendiği için burada)
+            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+            print("  Doğal ses modeli yükleniyor (ilk seferde birkaç dakika sürebilir)...", flush=True)
+            self.model = ChatterboxMultilingualTTS.from_pretrained(device="cpu")
+        return self.model
+
+    def referans(self, ses: str, gecici: Path):
+        """sesler/ klasöründeki kaydı WAV'a çevirir. 'varsayilan' ise None döner."""
+        if ses in ("", "varsayilan", "default"):
+            return None
+        if ses in self.referanslar:
+            return self.referanslar[ses]
+        klasor = KOK / "sesler"
+        aday = None
+        if klasor.exists():
+            for d in sorted(klasor.iterdir()):
+                if ascii_ad(d.stem).lower() == ses and d.is_file():
+                    aday = d
+                    break
+        if aday is None:
+            print(f"  ⚠ sesler/ klasöründe '{ses}' adlı kayıt yok, varsayılan ses kullanılıyor.")
+            self.referanslar[ses] = None
+            return None
+        wav = gecici / f"referans-{ses}.wav"
+        # en fazla 20 saniye, tek kanal, 24 kHz
+        calistir(["ffmpeg", "-y", "-loglevel", "error", "-i", str(aday), "-t", "20",
+                  "-ac", "1", "-ar", "24000", str(wav)])
+        self.referanslar[ses] = str(wav)
+        return str(wav)
+
+    def oku(self, metin: str, dil: str, ayar: Ayar, hedef_mp3: Path, gecici: Path, sira: str):
+        import torch
+        import torchaudio
+        model = self.yukle()
+        ref = self.referans(ayar.ses, gecici)
+
+        metin = metin.strip()
+        if not re.search(r"[.!?…:;,]$", metin):
+            metin += "."   # noktalamasız kısa parçalarda model sonuna ses uyduruyor
+        # Harf sayısına göre olabilecek en uzun süre (Arapça harekeler sayılmaz).
+        # Model bazen kısa metinlerin sonuna anlamsız ses ekliyor; bu sınır onu yakalar.
+        harf = sum(1 for ch in metin if not ch.isspace() and unicodedata.category(ch) != "Mn")
+        en_uzun = 0.13 * harf + 0.9
+
+        en_iyi = None
+        for deneme in range(3):
+            torch.manual_seed(1234 + deneme)
+            dalga = model.generate(
+                metin, language_id=dil, audio_prompt_path=ref,
+                exaggeration=0.25 + ayar.duygu / 100 * 0.6,   # 65 → ~0.64
+                cfg_weight=0.3, temperature=0.8,
+            )
+            sure = dalga.shape[-1] / model.sr
+            if en_iyi is None or sure < en_iyi[1]:
+                en_iyi = (dalga, sure)
+            if sure <= en_uzun:
+                break
+            print(f"    ↻ fazladan ses algılandı ({sure:.1f} sn > {en_uzun:.1f} sn), yeniden okunuyor", flush=True)
+        dalga, sure = en_iyi
+
+        ham = gecici / f"{sira}-ham.wav"
+        torchaudio.save(str(ham), dalga, model.sr)
+        tempo = max(0.7, min(1.3, 1 + ayar.hiz / 100))
+        filtre = ""
+        if sure > en_uzun:
+            # üç denemede de uzun çıktıysa fazlasını yumuşakça kes
+            filtre = f"atrim=0:{en_uzun:.2f},afade=t=out:st={max(en_uzun - 0.2, 0):.2f}:d=0.2,"
+        # baştaki/sondaki sessizliği kırp, tempoyu ayarla
+        calistir([
+            "ffmpeg", "-y", "-loglevel", "error", "-i", str(ham), "-af",
+            filtre +
+            "silenceremove=start_periods=1:start_threshold=-45dB,"
+            "areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse,"
+            f"atempo={tempo:.3f}",
+            "-ar", "24000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k", str(hedef_mp3),
+        ])
+
+
+def cumlelere_bol(metin: str):
+    """Doğal motor için metni cümlelere, uzun cümleleri virgül/noktalı virgülden böler.
+    Her parça için (metin, ardından bırakılacak sessizlik) döner."""
+    cumleler = re.findall(r".+?(?:\.\.\.|…|[.!?]+|$)(?:\s+|$)", metin.strip())
+    sonuc = []
+    for c in (x.strip() for x in cumleler):
+        if not c:
+            continue
+        parcalar = [c]
+        if len(c) > PARCA_UZUNLUK:
+            parcalar = []
+            simdiki = ""
+            for p in re.split(r"(?<=[,;:])\s+", c):
+                if simdiki and len(simdiki) + len(p) + 1 > PARCA_UZUNLUK:
+                    parcalar.append(simdiki)
+                    simdiki = p
+                else:
+                    simdiki = f"{simdiki} {p}".strip()
+            if simdiki:
+                parcalar.append(simdiki)
+        for p in parcalar:
+            son = "…" if p.endswith(("...", "…")) else p[-1]
+            sonuc.append((p, DURAKLAMA.get(son, 0.3)))
+    return sonuc
+
+
 def altyazi_gruplari(metin: str):
     """Altyazı için metnin aslını kısa satırlara böler."""
     kelimeler = metin.split()
@@ -289,6 +444,9 @@ def zamanla(satirlar, kelime_zamanlari, toplam_sure):
     return [(b, max(s, b + 0.3), t) for b, s, t in zip(baslar, sonlar, satirlar)]
 
 
+DOGAL = DogalMotor()
+
+
 async def dosya_isle(kaynak: Path, cikti_klasoru: Path):
     ham = kaynak.read_text(encoding="utf-8-sig")
     ayar, govde = ayarlari_ayir(ham)
@@ -311,6 +469,27 @@ async def dosya_isle(kaynak: Path, cikti_klasoru: Path):
             parca_dosya = gecici / f"{i:04d}.mp3"
             if p.tur == "dur":
                 sessizlik(parca_dosya, p.saniye)
+            elif ayar.motor == "dogal":
+                okunacak = telaffuz_uygula(p.metin, kurallar) if p.tur == "tr" else p.metin
+                asil_parcalar = cumlelere_bol(p.metin)
+                okunan_parcalar = cumlelere_bol(okunacak)
+                if len(asil_parcalar) != len(okunan_parcalar):
+                    # telaffuz değişikliği bölmeyi bozduysa altyazı için okunanı kullan
+                    asil_parcalar = okunan_parcalar
+                for j, ((asil, _), (okunan, bosluk)) in enumerate(zip(asil_parcalar, okunan_parcalar)):
+                    cumle_dosya = gecici / f"{i:04d}-{j:03d}.mp3"
+                    DOGAL.oku(okunan, p.tur, ayar, cumle_dosya, gecici, f"{i:04d}-{j:03d}")
+                    sure = sure_ol(cumle_dosya)
+                    for b, s, t in zamanla(altyazi_gruplari(asil), [], sure):
+                        txt_altyazi.append((zaman_cizelgesi + b, zaman_cizelgesi + s, t))
+                    dosyalar.append(cumle_dosya)
+                    zaman_cizelgesi += sure
+                    bosluk_dosya = gecici / f"{i:04d}-{j:03d}-b.mp3"
+                    sessizlik(bosluk_dosya, bosluk)
+                    dosyalar.append(bosluk_dosya)
+                    zaman_cizelgesi += sure_ol(bosluk_dosya)
+                    print(f"  [{i + 1}/{len(parcalar)}] cümle {j + 1}/{len(okunan_parcalar)} tamam", flush=True)
+                continue
             else:
                 ses = SESLER[ayar.ses][p.tur]
                 okunacak = telaffuz_uygula(p.metin, kurallar) if p.tur == "tr" else p.metin
@@ -341,7 +520,8 @@ async def dosya_isle(kaynak: Path, cikti_klasoru: Path):
     sure = sure_ol(mp3)
     print(f"✔ {kaynak.name} → {mp3.name} ({sure:.1f} sn), {srt.name}")
     return {"kaynak": kaynak.name, "mp3": mp3.name, "srt": srt.name,
-            "sure": round(sure, 1), "ses": ayar.ses}
+            "sure": round(sure, 1),
+            "ses": (f"doğal ({ayar.ses})" if ayar.motor == "dogal" else f"hızlı ({ayar.ses})")}
 
 
 async def ana():

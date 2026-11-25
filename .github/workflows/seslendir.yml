@@ -16,10 +16,10 @@ on:
         required: false
         default: ""
       ses:
-        description: "Hızlı metin için ses"
+        description: "Kutuya yazılan metin için ses (dogal = hikâye anlatıcısı, ahmet/emel = hızlı Microsoft sesleri)"
         type: choice
-        options: [ahmet, emel]
-        default: ahmet
+        options: [dogal, ahmet, emel]
+        default: dogal
 
 permissions:
   contents: write
@@ -31,7 +31,7 @@ concurrency:
 jobs:
   seslendir:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,11 +39,22 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scripts/gereksinimler.txt
+
+      - name: Ses modelini önbellekten al
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.pkuseg
+          key: ses-modeli-chatterbox-v1
 
       - name: Araçları kur
         run: |
-          pip install --quiet edge-tts
+          pip install --quiet torch==2.6.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install --quiet -r scripts/gereksinimler.txt
           command -v ffmpeg >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
 
       - name: Seslendirilecek dosyaları bul
@@ -58,7 +69,8 @@ jobs:
           : > liste.txt
           if [ "$OLAY" = "workflow_dispatch" ] && [ -n "$GIRDI_METIN" ]; then
             mkdir -p /tmp/hizli
-            printf 'ses: %s\n---\n%s\n' "$GIRDI_SES" "$GIRDI_METIN" > "/tmp/hizli/hizli-${GITHUB_RUN_NUMBER}.txt"
+            if [ "$GIRDI_SES" = "dogal" ]; then AYAR="motor: dogal"; else AYAR="ses: $GIRDI_SES"; fi
+            printf '%s\n---\n%s\n' "$AYAR" "$GIRDI_METIN" > "/tmp/hizli/hizli-${GITHUB_RUN_NUMBER}.txt"
             printf '%s\0' "/tmp/hizli/hizli-${GITHUB_RUN_NUMBER}.txt" >> liste.txt
           elif [ "$OLAY" = "workflow_dispatch" ] && [ -n "$GIRDI_DOSYA" ]; then
             ad="${GIRDI_DOSYA#metinler/}"
