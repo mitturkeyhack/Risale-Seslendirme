@@ -1,0 +1,12 @@
+# Telaffuz sözlüğü
+# Seslendirici bir kelimeyi yanlış okursa buraya ekle:
+#   kelime = okunuşu
+# Altyazıda kelimenin aslı görünür, sadece okunuş değişir.
+# '#' ile başlayan satırlar dikkate alınmaz.
+
+Risale-i Nur = Risâlei Nur
+Kur'ân = Kuran
+Kur'ân-ı Hakîm = Kuranı Hakîm
+Kur'ân-ı Kerim = Kuranı Kerim
+Cenab-ı Hak = Cenabı Hak
+Cenâb-ı Hak = Cenabı Hak

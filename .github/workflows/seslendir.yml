@@ -1,0 +1,112 @@
+name: Seslendir
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "metinler/**.txt"
+  workflow_dispatch:
+    inputs:
+      dosya:
+        description: "metinler klasöründeki dosyanın adı (örn: ayet-temsili.txt). Boş bırakırsan hepsi seslendirilir."
+        required: false
+        default: ""
+      metin:
+        description: "Ya da kısa bir metni buraya yapıştır (dosya açmadan hızlı seslendirme)"
+        required: false
+        default: ""
+      ses:
+        description: "Hızlı metin için ses"
+        type: choice
+        options: [ahmet, emel]
+        default: ahmet
+
+permissions:
+  contents: write
+
+concurrency:
+  group: seslendir
+  cancel-in-progress: false
+
+jobs:
+  seslendir:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Araçları kur
+        run: |
+          pip install --quiet edge-tts
+          command -v ffmpeg >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+
+      - name: Seslendirilecek dosyaları bul
+        id: bul
+        env:
+          OLAY: ${{ github.event_name }}
+          ONCE: ${{ github.event.before }}
+          GIRDI_DOSYA: ${{ github.event.inputs.dosya }}
+          GIRDI_METIN: ${{ github.event.inputs.metin }}
+          GIRDI_SES: ${{ github.event.inputs.ses }}
+        run: |
+          : > liste.txt
+          if [ "$OLAY" = "workflow_dispatch" ] && [ -n "$GIRDI_METIN" ]; then
+            mkdir -p /tmp/hizli
+            printf 'ses: %s\n---\n%s\n' "$GIRDI_SES" "$GIRDI_METIN" > "/tmp/hizli/hizli-${GITHUB_RUN_NUMBER}.txt"
+            printf '%s\0' "/tmp/hizli/hizli-${GITHUB_RUN_NUMBER}.txt" >> liste.txt
+          elif [ "$OLAY" = "workflow_dispatch" ] && [ -n "$GIRDI_DOSYA" ]; then
+            ad="${GIRDI_DOSYA#metinler/}"
+            case "$ad" in *.txt) ;; *) ad="$ad.txt" ;; esac
+            printf '%s\0' "metinler/$ad" >> liste.txt
+          elif [ "$OLAY" = "workflow_dispatch" ] || [ -z "$ONCE" ] || [ "$ONCE" = "0000000000000000000000000000000000000000" ]; then
+            find metinler -name '*.txt' -print0 >> liste.txt
+          else
+            git -c core.quotepath=off diff --name-only -z --diff-filter=AMR "$ONCE" "$GITHUB_SHA" -- 'metinler/*.txt' 'metinler/**/*.txt' >> liste.txt
+          fi
+          adet=$(tr -cd '\0' < liste.txt | wc -c)
+          echo "Seslendirilecek dosya sayısı: $adet"
+          echo "adet=$adet" >> "$GITHUB_OUTPUT"
+
+      - name: Seslendir
+        if: steps.bul.outputs.adet != '0'
+        run: |
+          xargs -0 -a liste.txt python scripts/seslendir.py --cikti cikti --ozet ozet.json
+
+      - name: Release olarak yayınla
+        if: steps.bul.outputs.adet != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls cikti/* >/dev/null 2>&1 || { echo "Üretilen dosya yok"; exit 1; }
+          TAG="ses-${GITHUB_RUN_NUMBER}"
+          python - "$TAG" <<'PY'
+          import json, sys, os
+          tag = sys.argv[1]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          o = json.load(open("ozet.json", encoding="utf-8"))
+          adlar = [s["kaynak"].removesuffix(".txt") for s in o["sonuclar"]]
+          baslik = ", ".join(adlar)
+          if len(baslik) > 90:
+              baslik = baslik[:87] + "..."
+          satirlar = ["## İndirme linkleri", ""]
+          for s in o["sonuclar"]:
+              taban = f"https://github.com/{repo}/releases/download/{tag}"
+              dk, sn = divmod(int(s["sure"]), 60)
+              satirlar.append(f"**{s['kaynak']}** ({dk} dk {sn} sn, ses: {s['ses']})")
+              satirlar.append(f"- 🔊 [MP3 indir]({taban}/{s['mp3']})")
+              satirlar.append(f"- 📝 [Altyazı (SRT) indir]({taban}/{s['srt']})")
+              satirlar.append("")
+          if o["hatalar"]:
+              satirlar.append("⚠️ Seslendirilemeyenler: " + ", ".join(o["hatalar"]))
+          open("baslik.txt", "w", encoding="utf-8").write("🔊 " + baslik)
+          open("notlar.md", "w", encoding="utf-8").write("\n".join(satirlar))
+          PY
+          gh release create "$TAG" cikti/* --title "$(cat baslik.txt)" --notes-file notlar.md
+          echo "### ✅ Hazır" >> "$GITHUB_STEP_SUMMARY"
+          cat notlar.md >> "$GITHUB_STEP_SUMMARY"
