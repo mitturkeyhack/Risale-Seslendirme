@@ -23,7 +23,11 @@ import sys
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from seslendir import ascii_ad  # noqa: E402
+
 KOK = Path(__file__).resolve().parent.parent
+GECIS = 0.9   # sahneler arası yumuşak geçiş süresi (saniye)
 GORSEL_UZANTI = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -49,6 +53,8 @@ def main():
     ap.add_argument("--mpt", default="/tmp/mpt")
     ap.add_argument("--mpt-python", default="/tmp/mptenv/bin/python")
     ap.add_argument("--fontlar", default="/tmp/fontlar")
+    ap.add_argument("--mp3", help="(deneme için) hazır ses; verilirse seslendirme atlanır")
+    ap.add_argument("--srt", help="(deneme için) hazır altyazı")
     args = ap.parse_args()
 
     klasor = Path(args.klasor).resolve()
@@ -69,21 +75,28 @@ def main():
     is_klasoru.mkdir(parents=True, exist_ok=True)
 
     # 1) Seslendirme — çıktı adını klasör adına sabitle
-    gecici_metin = is_klasoru / f"{ad}.txt"
-    shutil.copy(metin, gecici_metin)
-    calistir([sys.executable, KOK / "scripts" / "seslendir.py", gecici_metin, "--cikti", is_klasoru,
-              "--ozet", is_klasoru / "ozet.json"])
-    ozet = json.loads((is_klasoru / "ozet.json").read_text(encoding="utf-8"))
-    if not ozet["sonuclar"]:
-        sys.exit("Seslendirme başarısız")
-    mp3 = is_klasoru / ozet["sonuclar"][0]["mp3"]
-    srt = is_klasoru / ozet["sonuclar"][0]["srt"]
+    if args.mp3:
+        mp3 = is_klasoru / f"{ascii_ad(ad)}.mp3"
+        srt = is_klasoru / f"{ascii_ad(ad)}.srt"
+        shutil.copy(args.mp3, mp3)
+        shutil.copy(args.srt, srt)
+    else:
+        gecici_metin = is_klasoru / f"{ad}.txt"
+        shutil.copy(metin, gecici_metin)
+        calistir([sys.executable, KOK / "scripts" / "seslendir.py", gecici_metin, "--cikti", is_klasoru,
+                  "--ozet", is_klasoru / "ozet.json"])
+        ozet = json.loads((is_klasoru / "ozet.json").read_text(encoding="utf-8"))
+        if not ozet["sonuclar"]:
+            sys.exit("Seslendirme başarısız")
+        mp3 = is_klasoru / ozet["sonuclar"][0]["mp3"]
+        srt = is_klasoru / ozet["sonuclar"][0]["srt"]
     ses_suresi = sure_ol(mp3)
 
-    # 2) MoneyPrinterTurbo: görseller + ses → hareketli video (altyazısız)
-    klip = max(3, math.ceil(ses_suresi / len(gorseller)) + 1)
+    # 2) MoneyPrinterTurbo: her görsel için yavaş yakınlaşan hareket klibi
+    n = len(gorseller)
+    klip = max(4, math.ceil((ses_suresi + GECIS * (n - 1)) / n) + 1)
     gorev = str(uuid.uuid4())
-    calistir([
+    sonuc = subprocess.run([
         args.mpt_python, "cli.py",
         "--video-script", "video",            # altyazıyı biz basıyoruz, senaryo sadece zorunlu alan
         "--video-language", "tr-TR",
@@ -91,27 +104,51 @@ def main():
         "--video-materials", ",".join(str(g) for g in gorseller),
         "--video-concat-mode", "sequential",
         "--image-motion", "zoom",
-        "--video-transition-mode", "fade-in",
+        "--video-transition-mode", "none",
         "--video-clip-duration", str(klip),
         "--video-aspect", "9:16",
-        "--custom-audio-file", mp3,
+        "--custom-audio-file", str(mp3),
         "--bgm-type", "none",
         "--no-subtitle-enabled",
+        "--stop-at", "materials",
         "--task-id", gorev,
-    ], cwd=args.mpt)
-    ham_video = Path(args.mpt) / "storage" / "tasks" / gorev / "final-1.mp4"
-    if not ham_video.exists():
-        sys.exit("MoneyPrinterTurbo video üretemedi")
+    ], cwd=args.mpt, capture_output=True, text=True)
+    print(sonuc.stderr[-3000:])
+    if sonuc.returncode != 0:
+        sys.exit("MoneyPrinterTurbo çalışmadı")
+    json_satir = [s for s in sonuc.stdout.splitlines() if s.startswith("{")][-1]
+    klipler = [Path(args.mpt) / m if not str(m).startswith("/") else Path(m)
+               for m in json.loads(json_satir)["result"]["materials"]]
+    if len(klipler) != n:
+        print(f"  ⚠ {n} görsel için {len(klipler)} klip geldi", flush=True)
 
-    # 3) Kelime kelime yanan altyazı + hafif kenar karartması
+    # 3) Klipleri yumuşak geçişle (crossfade) birleştir, altyazı + kenar karartması ekle
     ass = is_klasoru / f"{ad}.ass"
     calistir([sys.executable, KOK / "scripts" / "altyazi_ass.py", srt, ass])
     ass_yol = str(ass).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
     font_yol = str(args.fontlar).replace(":", "\\:")
+    girdiler, filtre = [], []
+    for i, k in enumerate(klipler):
+        girdiler += ["-i", str(k)]
+        filtre.append(
+            f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
+            f"crop=1080:1920,setsar=1,fps=30,format=yuv420p,settb=AVTB[v{i}]")
+    onceki, birikim = "v0", sure_ol(klipler[0])
+    for i in range(1, len(klipler)):
+        cikis = f"x{i}"
+        filtre.append(f"[{onceki}][v{i}]xfade=transition=fade:duration={GECIS}:offset={birikim - GECIS:.3f}[{cikis}]")
+        birikim += sure_ol(klipler[i]) - GECIS
+        onceki = cikis
+    filtre.append(
+        f"[{onceki}]subtitles='{ass_yol}':fontsdir='{font_yol}',vignette=PI/6,"
+        f"fade=t=in:st=0:d=0.6,fade=t=out:st={max(ses_suresi - 0.2, 0):.2f}:d=0.8,format=yuv420p[son]")
+    ses_idx = len(klipler)
     son_video = cikti / f"{mp3.stem}.mp4"
     calistir([
-        "ffmpeg", "-y", "-loglevel", "error", "-i", ham_video,
-        "-vf", f"subtitles='{ass_yol}':fontsdir='{font_yol}',vignette=PI/6,format=yuv420p",
+        "ffmpeg", "-y", "-loglevel", "error", *girdiler, "-i", str(mp3),
+        "-filter_complex", ";".join(filtre),
+        "-map", "[son]", "-map", f"{ses_idx}:a",
+        "-af", "apad=pad_dur=0.8", "-t", f"{ses_suresi + 0.6:.2f}",
         "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-maxrate", "10M", "-bufsize", "20M",
         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", son_video,
     ])

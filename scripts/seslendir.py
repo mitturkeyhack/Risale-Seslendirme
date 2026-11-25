@@ -498,11 +498,23 @@ def kelime_zamanlari_bul(ses_dosyasi: Path, kelimeler):
         for j in range(blok.size):
             _, b, s = duyulan[blok.b + j]
             zamanlar[blok.a + j] = (b, s)
-    # yakın ama birebir olmayan kelimeler: eşleşmeyen aralıklarda sırayla dağıt
+    # birebir eşleşmeyen aralıklar (ör. Arapça, farklı duyulan kelimeler): duyulan kelimelerin
+    # kapladığı süreyi asıl kelimelere harf sayısına göre paylaştır
     for etiket, a1, a2, b1, b2 in esle.get_opcodes():
-        if etiket == "replace" and a2 - a1 == b2 - b1:
+        if etiket != "replace":
+            continue
+        if a2 - a1 == b2 - b1:
             for j in range(a2 - a1):
                 zamanlar[a1 + j] = duyulan[b1 + j][1:]
+            continue
+        bas, son = duyulan[b1][1], duyulan[b2 - 1][2]
+        uz = [max(len(asil[k]), 1) for k in range(a1, a2)]
+        top = sum(uz)
+        t = bas
+        for k, u in zip(range(a1, a2), uz):
+            d = (son - bas) * u / top
+            zamanlar[k] = (t, t + d)
+            t += d
     # hâlâ zamanı olmayanları komşularına göre harf oranıyla doldur
     i = 0
     while i < len(zamanlar):
@@ -514,7 +526,7 @@ def kelime_zamanlari_bul(ses_dosyasi: Path, kelimeler):
             j += 1
         bas = zamanlar[i - 1][1] if i > 0 else 0.0
         son = zamanlar[j][0] if j < len(zamanlar) else toplam
-        uz = [len(kelimeler[k]) + 1 for k in range(i, j)]
+        uz = [max(len(asil[k]), 1) + 1 for k in range(i, j)]
         top = sum(uz)
         t = bas
         for k, u in zip(range(i, j), uz):
