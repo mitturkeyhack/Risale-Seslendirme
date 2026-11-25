@@ -1,0 +1,47 @@
+name: Ses Örnekleri (Gemini)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deneme/ses-ornekleri.txt"
+  workflow_dispatch:
+    inputs:
+      sesler:
+        description: "Denenecek Gemini sesleri (virgülle)"
+        required: false
+        default: "Charon,Algieba,Enceladus,Sadaltager,Iapetus"
+
+permissions:
+  contents: write
+
+jobs:
+  ornekler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Kur
+        run: python --version
+      - name: Örnek sesleri üret
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SESLER: ${{ github.event.inputs.sesler || 'Charon,Algieba,Enceladus,Sadaltager,Iapetus' }}
+        run: python scripts/gemini_ses.py deneme/ses-ornekleri.txt --ornekler --sesler "$SESLER" --cikti cikti
+      - name: Release olarak yayınla
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="ses-ornekleri-${GITHUB_RUN_NUMBER}"
+          {
+            echo "## 🎙️ Gemini ses örnekleri"
+            echo
+            for f in cikti/*.mp3; do
+              n=$(basename "$f")
+              echo "- [$n](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${n})"
+            done
+          } > notlar.md
+          gh release create "$TAG" cikti/*.mp3 --title "🎙️ Ses örnekleri" --notes-file notlar.md
